@@ -1026,6 +1026,16 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      !! PROJECTION -> POD2L
+      print *, 'DEBUGGING before keyword association'
+      CALL keyword_create(keyword, __LOCATION__, name='POD2L', &
+                          description="Print POD2L coupling between selected states", &
+                          usage="POD2L {integer} {integer}", &
+                          n_var=2, type_of_var=integer_t, repeats=.FALSE.)
+      print*,  ASSOCIATED(keyword)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      
       ! PROJECTION -> PROGRAM_RUN_INFO (create)
       CALL cp_print_key_section_create(print_key, __LOCATION__, name='PROGRAM_RUN_INFO', &
                                        description="Controls printing of data and informations to log file", &

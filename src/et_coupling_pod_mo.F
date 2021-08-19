@@ -22,7 +22,9 @@ MODULE et_coupling_pod_mo
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_type,&
-                                              cp_fm_vectorssum
+                                              cp_fm_vectorssum,&
+                                              cp_fm_to_fm_submat,&
+                                              cp_fm_write_formatted
    USE cp_gemm_interface,               ONLY: cp_gemm
    USE cp_log_handling,                 ONLY: cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
@@ -156,7 +158,8 @@ CONTAINS
 !> \param n_mo number of block states
 !> \author Z. Futera (02.2017)
 ! **************************************************************************************************
-   SUBROUTINE pod_mo_set_coeffs(qs_env, ec, id, mo, mat_u, n_ao, n_mo)
+   !SUBROUTINE pod_mo_set_coeffs(qs_env, ec, id, mo, mat_u, n_ao, n_mo)
+   SUBROUTINE pod_mo_set_coeffs(qs_env, ec, id, mo, mat_u, n_ao, n_mo, output_unit)
 
       IMPLICIT NONE
 
@@ -168,6 +171,7 @@ CONTAINS
       TYPE(cp_fm_type), POINTER                          :: mat_u
       INTEGER                                            :: n_ao
       INTEGER                                            :: n_mo
+      INTEGER                                            :: output_unit
 
       ! Routine name for debug purposes
       CHARACTER(len=*), PARAMETER :: routineN = 'pod_mo_set_coeffs', &
@@ -176,7 +180,7 @@ CONTAINS
       ! Local variables
       INTEGER                                            :: ir, ic, jr, jc, nr, nc
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_type), POINTER                          :: mat_w
+      TYPE(cp_fm_type), POINTER                          :: mat_w, mat_t
       TYPE(cp_para_env_type), POINTER                    :: para_env
 #if defined(__SCALAPACK)
       INTEGER                                            :: is_p_row, is_p_col
@@ -203,12 +207,23 @@ CONTAINS
       NULLIFY (blacs_env)
       NULLIFY (para_env)
       NULLIFY (mat_w)
+      NULLIFY (mat_t)
 
       ! Working matrix
       CALL cp_fm_create(matrix=mat_w, matrix_struct=mo%mo_coeff%matrix_struct, &
                         name='BLOCK MO-TRANSFORMATION WORKING MATRIX')
+      CALL cp_fm_create(matrix=mat_t, matrix_struct=mat_w%matrix_struct, &
+                        name='ORTHOGONALIZED BLOCK MO')
       CALL cp_fm_set_all(mat_w, 0.0_dp)
+      CALL cp_fm_set_all(mat_t, 0.0_dp)
 
+      ! Transformation to original non-orthogonal basis set
+      CALL cp_gemm("N", "N", n_mo, n_mo, n_mo, 1.0_dp, ec%block(id)%tmatf, mat_u, 0.0_dp, mat_t)
+      CALL cp_fm_to_fm_submat(mat_t, mat_w, n_mo, n_mo, 1, 1, n_mo+1, 1)
+      print *, 'Testing mat_w shape and values'
+      CALL cp_fm_write_formatted(mat_w, output_unit)
+      !CALL cp_gemm("N", "N", n_ao, n_mo, n_ao, 1.0_dp, ec%tmatf, mat_u, 0.0_dp, mo%mo_coeff)
+      
       ! Matrix-element reordering
       nr = 1
       ! Rows
@@ -254,11 +269,12 @@ CONTAINS
       END DO
 
       ! Transformation to original non-orthogonal basis set
-      CALL cp_gemm("N", "N", n_ao, n_mo, n_ao, 1.0_dp, ec%tmatf, mat_w, 0.0_dp, mo%mo_coeff)
+      !CALL cp_gemm("N", "N", n_ao, n_mo, n_ao, 1.0_dp, ec%tmatf, mat_w, 0.0_dp, mo%mo_coeff)
       CALL pod_mo_norm(qs_env, mo, n_ao, n_mo)
 
       ! Clean memory
       CALL cp_fm_release(matrix=mat_w)
+      CALL cp_fm_release(matrix=mat_t)
 
    END SUBROUTINE pod_mo_set_coeffs
 
@@ -272,7 +288,8 @@ CONTAINS
 !> \param vec_e array of the block eigenvalues
 !> \author Z. Futera (02.2017)
 ! **************************************************************************************************
-   SUBROUTINE pod_mo_set(qs_env, ec, id, spin, mat_u, vec_e)
+   !SUBROUTINE pod_mo_set(qs_env, ec, id, spin, mat_u, vec_e)
+   SUBROUTINE pod_mo_set(qs_env, ec, id, spin, mat_u, vec_e, output_unit)
 
       ! Routine arguments
       TYPE(qs_environment_type), POINTER                 :: qs_env
@@ -280,6 +297,7 @@ CONTAINS
       INTEGER                                            :: id, spin
       TYPE(cp_fm_type), POINTER                          :: mat_u
       REAL(KIND=dp), DIMENSION(:), POINTER               :: vec_e
+      INTEGER                                            :: output_unit
 
       CHARACTER(len=*), PARAMETER :: routineN = 'pod_mo_set', routineP = moduleN//':'//routineN
 
@@ -349,7 +367,8 @@ CONTAINS
       CALL cp_fm_create(matrix=mo%mo_coeff, matrix_struct=fm_s, name='BLOCK STATES')
 
       ! Transform MO coefficients to original non-orthogonal basis set
-      CALL pod_mo_set_coeffs(qs_env, ec, id, mo, mat_u, n_ao, n_mo)
+      ! The next subroutine has to be fixed!
+      CALL pod_mo_set_coeffs(qs_env, ec, id, mo, mat_u, n_ao, n_mo, output_unit)
 
       ! Occupancies
       NULLIFY (mo%occupation_numbers)
