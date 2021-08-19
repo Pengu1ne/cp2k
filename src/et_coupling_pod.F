@@ -28,7 +28,8 @@ MODULE et_coupling_pod
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_to_fm_submat,&
-                                              cp_fm_type
+                                              cp_fm_type, &
+                                              cp_fm_write_formatted
    USE cp_gemm_interface,               ONLY: cp_gemm
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
@@ -53,7 +54,8 @@ MODULE et_coupling_pod
    USE et_coupling_pod_types,           ONLY: et_cpl,&
                                               pod_data_release
    USE et_coupling_pod_utils,           ONLY: pod_check_restart,&
-                                              pod_get_transf_mat
+                                              pod_get_transf_mat,&
+                                              pod_get_transf_mat_sub
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -135,7 +137,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'pod_block_init', routineP = moduleN//':'//routineN
 
       INTEGER                                            :: i, j, k, l, n, n_ao, n_atoms, n_set
-      INTEGER, DIMENSION(:), POINTER                     :: atom_id, atom_nf, atom_ps, n_shell, t
+      INTEGER, DIMENSION(:), POINTER                     :: atom_id, atom_nf, atom_ps, n_shell, t, states
       INTEGER, DIMENSION(:, :), POINTER                  :: ang_mom_id
       TYPE(gto_basis_set_type), POINTER                  :: ao_basis_set
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -159,10 +161,13 @@ CONTAINS
       ! Initialization
       ec%n_atoms = 0
       ec%n_blocks = 0
+      st_a = 0
+      st_b = 0
       NULLIFY (ec%fermi)
       NULLIFY (ec%tmatf)
       NULLIFY (ec%tmatr)
       NULLIFY (ec%block)
+      NULLIFY (states)
 
       ! Number of atoms / atom types
       CALL get_qs_env(qs_env, particle_set=particle_set, qs_kind_set=qs_kind_set, natom=n_atoms)
@@ -273,6 +278,17 @@ CONTAINS
          END DO
 
          ec%n_atoms = ec%n_atoms + ec%block(i)%n_atoms
+      
+         ! POD2L states calculation if defined by user
+         !IF ????? THEN
+         CALL section_vals_val_get(et_proj_sec, keyword_name='POD2L', i_vals=states)
+
+         ! Sanity check
+         IF (states(i) > ec%block(i)%n_ao) THEN
+            CPABORT('Number of states cannot exceed the number of atomic orbitals.')
+         END IF
+         !END IF
+
       END DO
 
       ! Clean memory
@@ -423,15 +439,19 @@ CONTAINS
       ALLOCATE (mat_t(n_spins))
       CPASSERT(ASSOCIATED(mat_t))
 
+
+      !IF keyword='POD2L' = .False. Perform this:
+      ! Will be uncommentd later! Now just testing - and creating - the matrix
       ! KS Hamiltonian
       CALL get_qs_env(qs_env, matrix_ks=mat_h)
       ! Transformation matrix
-      CALL cp_fm_create(matrix=ec%tmatf, matrix_struct=fm_s, &
-                        name='S^(-1/2) TRANSFORMATION MATRIX')
-      CALL cp_fm_create(matrix=ec%tmatr, matrix_struct=fm_s, &
-                        name='S^(+1/2) TRANSFORMATION MATRIX')
-      CALL pod_get_transf_mat(output_unit, qs_env, ec, mat_w, n_ao)
-
+      !CALL cp_fm_create(matrix=ec%tmatf, matrix_struct=fm_s, &
+      !                  name='S^(-1/2) TRANSFORMATION MATRIX')
+      !CALL cp_fm_create(matrix=ec%tmatr, matrix_struct=fm_s, &
+      !                  name='S^(+1/2) TRANSFORMATION MATRIX')
+      !CALL pod_get_transf_mat(output_unit, qs_env, ec, mat_w, n_ao)
+      
+      !IF keyword='POD2L' = .True. Perform (only) this:
       DO i = 1, n_spins
 
          ! Full-matrix format
@@ -439,11 +459,12 @@ CONTAINS
                            name='KS HAMILTONIAN IN SEPARATED ORTHOGONALIZED BASIS SET')
          CALL copy_dbcsr_to_fm(mat_h(i)%matrix, mat_t(i)%matrix)
 
+         !IF keyword='POD2L' = .False. Perform this:
          ! Transform KS Hamiltonian to the orthogonalized AO basis set
-         CALL cp_gemm("N", "N", n_ao, n_ao, n_ao, 1.0_dp, &
-                      ec%tmatf, mat_t(i)%matrix, 0.0_dp, mat_w)
-         CALL cp_gemm("N", "N", n_ao, n_ao, n_ao, 1.0_dp, &
-                      mat_w, ec%tmatf, 0.0_dp, mat_t(i)%matrix)
+         !CALL cp_gemm("N", "N", n_ao, n_ao, n_ao, 1.0_dp, &
+         !             ec%tmatf, mat_t(i)%matrix, 0.0_dp, mat_w)
+         !CALL cp_gemm("N", "N", n_ao, n_ao, n_ao, 1.0_dp, &
+         !             mat_w, ec%tmatf, 0.0_dp, mat_t(i)%matrix)
 
          ! Reorder KS Hamiltonian elements to defined block structure
          CALL pod_block_projection(ec, mat_t(i)%matrix, mat_w)
@@ -451,6 +472,26 @@ CONTAINS
       END DO
 
    END SUBROUTINE pod_block_hamiltonian
+   
+! *************************************************************************************************
+!> \brief Returns POD2L coupling
+!> \param hab POD2 coupling between fragments
+!> \param sab orthogonalized overlap matrix
+!> \param ea, eb eigenvalues / energies of the states
+! *************************************************************************************************
+   SUBROUTINE pod2l(hab, sab, ea, eb)
+      REAL(KIND=dp)                                      :: hab, sab, ea,eb
+
+      REAL(KIND=dp)                                      :: divided, divisor, eff_et_coup
+
+      ! Effective POD2L coupling
+      divided = hab - ((0.5*(eb + ea))*sab)
+      divisor = 1 - (sab*sab)
+      eff_et_coup = divided / divisor
+      eff_et_coup = eff_et_coup * 1000 * 27.2116
+      print *, 'POD2L value for states: 1-1'
+      print *, eff_et_coup, 'meV'
+   END SUBROUTINE pod2l
 
 ! **************************************************************************************************
 !> \brief Diagonalize diagonal blocks of the KS hamiltonian in separated orthogonalized basis set
@@ -458,6 +499,9 @@ CONTAINS
 !> \param ec electronic coupling data structure
 !> \param mat_h Hamiltonian in separated orthogonalized basis set
 !> \author Z. Futera (02.2017)
+! 
+!    THIS IS THE ORIGINAL
+!
 ! **************************************************************************************************
    SUBROUTINE pod_block_diag(qs_env, ec, mat_h)
 
@@ -634,6 +678,281 @@ CONTAINS
       CALL pod_save_state_close(qs_env, unit_wfn)
 
    END SUBROUTINE pod_block_diag
+
+! **************************************************************************************************
+!> \brief Diagonalize diagonal blocks of the KS hamiltonian in separated orthogonalized basis set
+!> \param qs_env QuickStep environment containing all system data
+!> \param ec electronic coupling data structure
+!> \param mat_h Hamiltonian in separated orthogonalized basis set
+!> \author Z. Futera (02.2017)
+!
+!  This subroutine is modified to POD2 routien. Maybe the best course of action is to rename this
+!  and copy the original before this.
+!
+! **************************************************************************************************
+   SUBROUTINE pod2_block_diag(qs_env, ec, mat_h, output_unit)
+   !SUBROUTINE pod_block_diag(qs_env, ec, mat_h, states, output_unit)
+
+      ! Routine arguments
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(et_cpl), POINTER                              :: ec
+      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: mat_h
+      !INTEGER, DIMENSION(:), POINTER                     :: states
+      INTEGER                                            :: output_unit 
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'pod_block_diag', routineP = moduleN//':'//routineN
+
+      INTEGER                                            :: i, id, j, k, l, n_spins, spin, unit_hab, &
+                                                            unit_wfn, st_a, st_b
+      REAL(KIND=dp)                                      :: ea,eb
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: vec_e
+      REAL(KIND=dp), ALLOCATABLE                         :: eff_et_coup, hab, sab, divided, divisor
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: dat
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_s
+      TYPE(cp_fm_type), POINTER                          :: mat_u, mat_t, mat_o, mat_w
+      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mat_s
+
+! Routine name for debug purposes
+! Local variables
+
+      NULLIFY (vec_e)
+      NULLIFY (blacs_env)
+      NULLIFY (dat)
+      NULLIFY (fm_s)
+      NULLIFY (mat_u)
+      NULLIFY (mat_t)
+      NULLIFY (mat_o)
+      NULLIFY (mat_w)
+      NULLIFY (para_env)
+
+      st_a = states(1)
+      st_b = states(2)
+
+      ! Parallel environment
+      CALL get_qs_env(qs_env, para_env=para_env, blacs_env=blacs_env)
+
+      ! Overlap matrix
+      CALL get_qs_env(qs_env, matrix_s=mat_s)
+      CALL cp_fm_create(matrix=mat_o, matrix_struct=mat_h(1)%matrix%matrix_struct, &
+                        name='FULL OVERLAP MATRIX')
+      CALL copy_dbcsr_to_fm(mat_s(1)%matrix, mat_o)
+
+      ! Storage for block sub-matrices
+      ALLOCATE (dat(ec%n_blocks))
+      CPASSERT(ASSOCIATED(dat))
+
+      ! Storage for couplings and wavefunctions
+      n_spins = SIZE(mat_h)
+      DO i = 1, ec%n_blocks
+         ! Memory for states
+         CPASSERT(.NOT. ASSOCIATED(ec%block(i)%mo))
+         ALLOCATE (ec%block(i)%mo(n_spins))
+         CPASSERT(ASSOCIATED(ec%block(i)%mo))
+         DO j = 1, n_spins
+            NULLIFY (ec%block(i)%mo(j)%mo_set)
+         END DO
+         ! Memory for couplings
+         ec%block(i)%n_hab_blocks = ec%n_blocks - i
+         CPASSERT(.NOT. ASSOCIATED(ec%block(i)%hab))
+         IF (ec%block(i)%n_hab_blocks > 0) THEN
+            ALLOCATE (ec%block(i)%hab(n_spins, ec%block(i)%n_hab_blocks))
+            CPASSERT(ASSOCIATED(ec%block(i)%hab))
+            DO j = 1, n_spins
+               DO k = 1, ec%block(i)%n_hab_blocks
+                  NULLIFY (ec%block(i)%hab(j, k)%matrix)
+               END DO
+            END DO
+         END IF
+      END DO
+
+      ! Binary data files - header
+      CALL pod_save_coupl_header(qs_env, ec, n_spins, unit_hab); 
+      CALL pod_save_state_header(qs_env, ec, n_spins, unit_wfn); 
+      
+      ! Spin components
+      DO spin = 1, n_spins
+
+         ! Diagonal blocks
+         j = 1
+         DO i = 1, ec%n_blocks
+
+            ! Memory allocation
+            CALL cp_fm_struct_create(fmstruct=fm_s, para_env=para_env, context=blacs_env, &
+                                     nrow_global=ec%block(i)%n_ao, ncol_global=ec%block(i)%n_ao)
+            CALL cp_fm_create(matrix=dat(i)%matrix, matrix_struct=fm_s, &
+                              name='H_KS DIAGONAL BLOCK')
+            CALL cp_fm_create(matrix=mat_t, matrix_struct=fm_s, &
+                              name='OVERLAP DIAGONAL BLOCK')
+            CALL cp_fm_create(matrix=mat_w, matrix_struct=fm_s, &
+                              name='BLOCK WORKING MATRIX')
+            CALL cp_fm_create(matrix=mat_u, matrix_struct=fm_s, &
+                              name='BLOCK UNITARY MATRIX')
+
+            CPASSERT(.NOT. ASSOCIATED(vec_e))
+            ALLOCATE (vec_e(ec%block(i)%n_ao))
+            CPASSERT(ASSOCIATED(vec_e))
+            
+            ! Copy block data
+            CALL cp_fm_to_fm_submat(mat_h(spin)%matrix, &
+                                    dat(i)%matrix, ec%block(i)%n_ao, &
+                                    ec%block(i)%n_ao, j, j, 1, 1)
+            CALL cp_fm_to_fm_submat(mat_o, mat_t, ec%block(i)%n_ao, &
+                                    ec%block(i)%n_ao, j, j, 1, 1)
+
+            ! Create forward (matf) and reverse (matr) for Lowdin
+            CALL cp_fm_create(matrix=ec%block(i)%tmatf, matrix_struct=fm_s, &
+                              name='S^-1/2 TRANSFORMATION M_f')
+            CALL cp_fm_create(matrix=ec%block(i)%tmatr, matrix_struct=fm_s, &
+                              name='S^-1/2 TRANSFORMATION M_r')
+            CALL pod_get_transf_mat_sub(output_unit, qs_env, ec, i, mat_t, ec%block(i)%n_ao)
+
+            ! Lowdin          
+            CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(i)%n_ao, ec%block(i)%n_ao, &
+                         1.0_dp, ec%block(i)%tmatf, dat(i)%matrix, 0.0_dp, mat_w)
+            CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(i)%n_ao, ec%block(i)%n_ao, &
+                         1.0_dp, mat_w, ec%block(i)%tmatf, 0.0_dp, dat(i)%matrix)
+            
+            ! Diagonalization
+            CALL choose_eigv_solver(dat(i)%matrix, mat_u, vec_e)
+            CALL cp_fm_to_fm(mat_u, dat(i)%matrix)
+          
+            ! Value has to be an user specified id
+            ! for eb: need to +n_mo's??
+            IF (i == 1) then
+               ea = vec_e(st_a)
+            END IF
+            IF (i == 2) then
+                eb = vec_e(st_b)
+            END IF 
+
+            ! Save state energies / vectors
+            CALL pod_mo_set(qs_env, ec, i, spin, mat_u, vec_e, output_unit)
+
+            ! Save state energies to binary data file
+            CALL pod_save_coupl_states(ec, i, spin, unit_hab)
+            ! Save state coefficients to binary data file
+            CALL pod_save_state_coeffs(ec, i, spin, unit_wfn)
+
+            ! Clean memory
+            CALL cp_fm_struct_release(fmstruct=fm_s)
+            NULLIFY (fm_s)
+            CALL cp_fm_release(matrix=mat_u)
+            NULLIFY (mat_u)
+            IF (ASSOCIATED(vec_e)) &
+               DEALLOCATE (vec_e)
+            NULLIFY (vec_e)
+
+            ! Off-set for next block
+            j = j + ec%block(i)%n_ao
+
+         END DO
+
+         ! Off-diagonal blocks
+         k = 1
+         DO i = 1, ec%n_blocks
+            l = 1
+            id = 1
+            DO j = 1, ec%n_blocks
+               IF (j > i) THEN
+ 
+                  ! Memory allocation
+                  CALL cp_fm_struct_create(fmstruct=fm_s, para_env=para_env, context=blacs_env, &
+                                           nrow_global=ec%block(i)%n_ao, ncol_global=ec%block(j)%n_ao)
+                  CALL cp_fm_create(matrix=ec%block(i)%hab(spin, id)%matrix, matrix_struct=fm_s, &
+                                    name='H_KS OFF-DIAGONAL BLOCK')
+                  CALL cp_fm_create(matrix=mat_w, matrix_struct=fm_s, &
+                                    name='BLOCK WORK MATRIX - GENERAL')
+
+                  ! Copy block data
+                  CALL cp_fm_to_fm_submat(mat_h(spin)%matrix, &
+                                          ec%block(i)%hab(spin, id)%matrix, ec%block(i)%n_ao, &
+                                          ec%block(j)%n_ao, k, l, 1, 1)
+                  CALL cp_fm_to_fm_submat(mat_o, mat_t, ec%block(i)%n_ao, &
+                                          ec%block(j)%n_ao, k, l, 1, 1)
+                  
+                  ! Lowdin -- Kohn-Sham
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(i)%n_ao, &
+                               1.0_dp, ec%block(i)%tmatf, ec%block(i)%hab(spin,id)%matrix, &
+                               0.0_dp, mat_w)
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(j)%n_ao, &
+                               1.0_dp, mat_w, ec%block(j)%tmatf, &
+                               0.0_dp, ec%block(i)%hab(spin,id)%matrix)
+                  
+                  ! Diagonalization -- Kohn-Sham
+                  CALL cp_gemm("T", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(i)%n_ao, &
+                                1.0_dp, dat(i)%matrix, ec%block(i)%hab(spin, id)%matrix, 0.0_dp, mat_w)
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(j)%n_ao, &
+                               1.0_dp, mat_w, dat(j)%matrix, 0.0_dp, ec%block(i)%hab(spin, id)%matrix)
+                  hab = ec%block(i)%hab(spin,id)%matrix%local_data(state1,state2)
+
+                  ! Lowdin -- Overlap
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(i)%n_ao, &
+                               1.0_dp, ec%block(i)%tmatf, mat_t, &
+                               0.0_dp, mat_w)
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(j)%n_ao, &
+                               1.0_dp, mat_w, ec%block(j)%tmatf, &
+                               0.0_dp, mat_t)
+                  
+                  ! Diagonalization -- Overlap
+                  CALL cp_gemm("T", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(i)%n_ao, &
+                                1.0_dp, dat(i)%matrix, mat_t, 0.0_dp, mat_w)
+                  CALL cp_gemm("N", "N", ec%block(i)%n_ao, ec%block(j)%n_ao, ec%block(j)%n_ao, &
+                               1.0_dp, mat_w, dat(j)%matrix, 0.0_dp, mat_t)
+                  sab = mat_t%local_data(state1,state2)
+
+                  ! POD2L calculation
+                  !CALL podl2(hab, sab, ea, eb)
+                  ! Make a separate subroutine!
+                  ! Done! Call here and remove this!
+                  !divided = hab - ((0.5*(eb + ea))*sab)
+                  !divisor = 1 - (sab*sab)
+                  !eff_et_coup = divided / divisor
+                  !eff_et_coup = eff_et_coup * 1000 * 27.2116
+                  !print *, 'POD2L value for states: 1-1'
+                  !print *, eff_et_coup, 'meV'
+
+                  ! Save coupling elements to binary data file
+                  CALL pod_save_coupl_elements(ec, i, id, spin, unit_hab); 
+                  ! Clean memory
+                  CALL cp_fm_struct_release(fmstruct=fm_s)
+                  NULLIFY (fm_s)
+                  CALL cp_fm_release(matrix=mat_u)
+                  NULLIFY (mat_u)
+                  CALL cp_fm_release(matrix=mat_t)
+                  NULLIFY (mat_t)
+
+                  id = id + 1
+
+               END IF
+               ! Off-set for next block
+               l = l + ec%block(j)%n_ao
+            END DO
+          ! Off-set for next block
+            k = k + ec%block(i)%n_ao
+         END DO
+
+         ! Clean memory
+         IF (ASSOCIATED(dat)) THEN
+            DO i = 1, SIZE(dat)
+               IF (ASSOCIATED(dat(i)%matrix)) THEN
+                  CALL cp_fm_release(matrix=dat(i)%matrix)
+                  NULLIFY (dat(i)%matrix)
+               END IF
+            END DO
+         END IF
+      END DO
+
+      ! Clean memory
+      IF (ASSOCIATED(dat)) &
+         DEALLOCATE (dat)
+
+      ! Close output streams
+      CALL pod_save_coupl_close(qs_env, unit_hab)
+      CALL pod_save_state_close(qs_env, unit_wfn)
+
+   END SUBROUTINE pod2_block_diag
 
 ! **************************************************************************************************
 !> \brief calculates the electron transfer coupling elements by projection-operator approach
@@ -836,21 +1155,29 @@ CONTAINS
 
                ! POD calculation
             ELSE
-
+               !IF POD2L = .False. THEN this:
                ! KS Hamiltonian
                CALL pod_block_hamiltonian(output_unit, qs_env, ec, fm_s, mat_h, mat_w, n_ao, 2)
                ! Block diagonization
-               CALL pod_block_diag(qs_env, ec, mat_h)
+               CALL pod_block_diag(qs_env, ec, mat_h, output_unit)
+
+               !IF POD2L = .True. THEN this:
+               ! Is this needed because the subroutines above already have the if-statements
+               ! KS Hamiltonian
+               !CALL pod_block_hamiltonian(output_unit, qs_env, ec, fm_s, mat_h, mat_w, n_ao, 2)
+               ! Block diagonization
+               !CALL pod2_block_diag(qs_env, ec, mat_h, output_unit)
+               !END IF
 
             END IF
 
             ! Print out energies and couplings
             DO i = 1, ec%n_blocks
                IF (output_unit > 0) THEN
-                  CALL pod_print_states(output_unit, ec%block(i)%mo, dft_cntrl%nspins, &
-                                        'block '//TRIM(ADJUSTL(cp_to_string(i)))//' states', &
-                                        mx_mo_a=mo(1)%mo_set%nmo, mx_mo_b=mo(2)%mo_set%nmo, &
-                                        fermi=.TRUE.)
+                  !CALL pod_print_states(output_unit, ec%block(i)%mo, dft_cntrl%nspins, &
+                  !                      'block '//TRIM(ADJUSTL(cp_to_string(i)))//' states', &
+                  !                      mx_mo_a=mo(1)%mo_set%nmo, mx_mo_b=mo(2)%mo_set%nmo, &
+                  !                      fermi=.TRUE.)
                END IF
                CALL pod_print_state_fracs(output_unit, qs_env, ec, i, dft_cntrl%nspins)
             END DO
@@ -906,29 +1233,30 @@ CONTAINS
                                           file_tmf, file_tmr, file_hab, file_wfn)
 
                ! POD calculation
+               ! Whatever was done above, do the same here
             ELSE
 
                ! KS Hamiltonian
                CALL pod_block_hamiltonian(output_unit, qs_env, ec, fm_s, mat_h, mat_w, n_ao, 1)
                ! Block diagonization
-               CALL pod_block_diag(qs_env, ec, mat_h)
+               CALL pod_block_diag(qs_env, ec, mat_h, output_unit)
 
             END IF
 
             ! Print out energies and couplings
             DO i = 1, ec%n_blocks
-               IF (output_unit > 0) THEN
-                  CALL pod_print_states(output_unit, ec%block(i)%mo, dft_cntrl%nspins, &
-                                        'block '//TRIM(ADJUSTL(cp_to_string(i)))//' states', &
-                                        mx_mo_a=mo(1)%mo_set%nmo, fermi=.TRUE.)
-               END IF
-               CALL pod_print_state_fracs(output_unit, qs_env, ec, i, dft_cntrl%nspins)
+               !IF (output_unit > 0) THEN
+               !   CALL pod_print_states(output_unit, ec%block(i)%mo, dft_cntrl%nspins, &
+               !                         'block '//TRIM(ADJUSTL(cp_to_string(i)))//' states', &
+               !                         mx_mo_a=mo(1)%mo_set%nmo, fermi=.TRUE.)
+               !END IF
+               !CALL pod_print_state_fracs(output_unit, qs_env, ec, i, dft_cntrl%nspins)
             END DO
 
             CALL pod_print_couplings(output_unit, qs_env, ec, mo(1)%mo_set%nmo)
 
             ! Save electronic states
-            CALL pod_save_state_cube(qs_env, ec, dft_cntrl%nspins)
+            !CALL pod_save_state_cube(qs_env, ec, dft_cntrl%nspins)
 
             !<----------------------------------------------------------------------------->!
 

@@ -38,10 +38,10 @@ MODULE et_coupling_types
 ! **************************************************************************************************
    TYPE et_coupling_type
       TYPE(cp_fm_p_type), DIMENSION(:), POINTER           :: et_mo_coeff
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER     :: rest_mat
-      LOGICAL                                            :: first_run
-      LOGICAL                                            :: keep_matrix
-      REAL(KIND=dp)                                    :: energy, e1, order_p
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER           :: rest_mat
+      LOGICAL                                             :: first_run
+      LOGICAL                                             :: keep_matrix
+      REAL(KIND=dp)                                       :: energy, e1, order_p
    END TYPE
 
 CONTAINS

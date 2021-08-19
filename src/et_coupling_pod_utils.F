@@ -14,16 +14,16 @@ MODULE et_coupling_pod_utils
                                               cp_fm_upper_to_full
    USE cp_fm_diag,                      ONLY: choose_eigv_solver
    USE cp_fm_types,                     ONLY: cp_fm_create,&
-                                              cp_fm_indxg2l,&
-                                              cp_fm_indxg2p,&
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
-                                              cp_fm_type
+                                              cp_fm_type,&
+                                              cp_fm_write_formatted
    USE cp_log_handling,                 ONLY: cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_generate_filename
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE et_coupling_pod_save,            ONLY: pod_save_transf_mat
-   USE et_coupling_pod_types,           ONLY: et_cpl
+   USE et_coupling_pod_types,           ONLY: et_cpl, &
+                                              et_cpl_block
    USE input_section_types,             ONLY: section_get_lval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
@@ -41,7 +41,8 @@ MODULE et_coupling_pod_utils
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'et_coupling_pod_utils'
 
    PUBLIC :: pod_check_restart, &
-             pod_get_transf_mat
+             pod_get_transf_mat, &
+             pod_get_transf_mat_sub
 
 CONTAINS
 
@@ -63,20 +64,26 @@ CONTAINS
       TYPE(cp_fm_type), POINTER                          :: mat_w
       INTEGER                                            :: n_ao
 
+      ! Routine name for debug purposes
       CHARACTER(len=*), PARAMETER :: routineN = 'pod_get_transf_mat', &
-         routineP = moduleN//':'//routineN
+                                     routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: i, ic, ic_loc, ir, ir_loc, j, n_b_col, &
-                                                            n_b_row, n_deps, n_p_col, n_p_row, &
-                                                            p_col_0, p_col_i, p_row_0, p_row_i
+      ! Local variables
+      INTEGER                                            :: i
+      INTEGER                                            :: n_deps
       REAL(KIND=dp)                                      :: f
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: ei, et
+      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: et, ei
       TYPE(cp_fm_type), POINTER                          :: mat_u
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mat_s
       TYPE(scf_control_type), POINTER                    :: scf_cntrl
+#if defined(__SCALAPACK)
+      INTEGER, EXTERNAL                                  :: indxg2l, indxg2p
 
-! Routine name for debug purposes
-! Local variables
+      INTEGER                                            :: j, ic, ir, ic_loc, ir_loc
+      INTEGER                                            :: n_b_row, n_b_col
+      INTEGER                                            :: n_p_row, n_p_col
+      INTEGER                                            :: p_row_0, p_col_0
+      INTEGER                                            :: p_row_i, p_col_i
 
       ! Number of rows/columns in Scalapack blocks
       n_b_row = mat_w%matrix_struct%nrow_block
@@ -90,6 +97,7 @@ CONTAINS
       ! Position of the actual processor
       p_row_i = mat_w%matrix_struct%context%mepos(1)
       p_col_i = mat_w%matrix_struct%context%mepos(2)
+#endif
 
       ! Initialization
       NULLIFY (mat_u)
@@ -116,17 +124,21 @@ CONTAINS
       n_deps = 0
       DO i = 1, n_ao
          IF (et(i) < scf_cntrl%eps_eigval) THEN
-            ic = cp_fm_indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
             IF (p_col_i == ic) THEN
-               ic_loc = cp_fm_indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
                DO j = 1, n_ao
-                  ir = cp_fm_indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
                   IF (p_row_i == ir) THEN
-                     ir_loc = cp_fm_indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
                      mat_w%local_data(ir_loc, ic_loc) = 0.0_dp
                   END IF
                END DO
             END IF
+#else
+            mat_w%local_data(1:n_ao, i) = 0.0_dp
+#endif
             n_deps = n_deps + 1
          END IF
       END DO
@@ -147,17 +159,21 @@ CONTAINS
       DO i = 1, n_ao
          IF (et(i) >= scf_cntrl%eps_eigval) THEN
             f = et(i)**(-0.25_dp)
-            ic = cp_fm_indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
             IF (p_col_i == ic) THEN
-               ic_loc = cp_fm_indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
                DO j = 1, n_ao
-                  ir = cp_fm_indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
                   IF (p_row_i == ir) THEN
-                     ir_loc = cp_fm_indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
                      mat_w%local_data(ir_loc, ic_loc) = f*mat_w%local_data(ir_loc, ic_loc)
                   END IF
                END DO
             END IF
+#else
+            mat_w%local_data(1:n_ao, i) = f*mat_w%local_data(1:n_ao, i)
+#endif
          END IF
       END DO
 
@@ -176,17 +192,21 @@ CONTAINS
       DO i = 1, n_ao
          IF (ei(i) >= scf_cntrl%eps_eigval) THEN
             f = ei(i)**(+0.25_dp)
-            ic = cp_fm_indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
             IF (p_col_i == ic) THEN
-               ic_loc = cp_fm_indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
                DO j = 1, n_ao
-                  ir = cp_fm_indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
                   IF (p_row_i == ir) THEN
-                     ir_loc = cp_fm_indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
                      mat_w%local_data(ir_loc, ic_loc) = f*mat_w%local_data(ir_loc, ic_loc)
                   END IF
                END DO
             END IF
+#else
+            mat_w%local_data(1:n_ao, i) = f*mat_w%local_data(1:n_ao, i)
+#endif
          END IF
       END DO
 
@@ -202,6 +222,190 @@ CONTAINS
       DEALLOCATE (ei)
 
    END SUBROUTINE pod_get_transf_mat
+
+! **************************************************************************************************
+!> \brief calculated transformation matrix for basis-set orthogonalization (S^{-1/2})
+!> \param output_unit unit number of the open output stream
+!> \param qs_env QuickStep environment containing all system data
+!> \param ec electronic coupling full data structure
+!> \param id block id
+!> \param mat_s Overlap matrix subblock
+!> \param n_ao number of atomic orbitLals (dimension of S matrix)
+!> \author Z. Futera (02.2017)
+! **************************************************************************************************
+   SUBROUTINE pod_get_transf_mat_sub(output_unit, qs_env, e0, id, mat_s, n_ao)
+
+      ! Routine arguments
+      INTEGER                                            :: output_unit
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(et_cpl), POINTER                              :: e0
+      INTEGER                                            :: id, n_ao
+      TYPE(cp_fm_type), POINTER                          :: mat_s
+
+      ! Routine name for debug purposes
+      CHARACTER(len=*), PARAMETER :: routineN = 'pod_get_transf_mat_sub', &
+                                     routineP = moduleN//':'//routineN
+
+      ! Local variables
+      !INTEGER                                            :: i, n_ao
+      INTEGER                                            :: i
+      INTEGER                                            :: n_deps
+      REAL(KIND=dp)                                      :: f
+      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: et, ei
+      TYPE(cp_fm_type), POINTER                          :: mat_u,mat_w
+      TYPE(scf_control_type), POINTER                    :: scf_cntrl
+      TYPE(et_cpl_block), POINTER                        :: ec
+#if defined(__SCALAPACK)
+      INTEGER, EXTERNAL                                  :: indxg2l, indxg2p
+
+      INTEGER                                            :: j, ic, ir, ic_loc, ir_loc
+      INTEGER                                            :: n_b_row, n_b_col
+      INTEGER                                            :: n_p_row, n_p_col
+      INTEGER                                            :: p_row_0, p_col_0
+      INTEGER                                            :: p_row_i, p_col_i
+
+      ! Number of rows/columns in Scalapack blocks
+      n_b_row = mat_s%matrix_struct%nrow_block
+      n_b_col = mat_s%matrix_struct%ncol_block
+      ! Number of processors
+      n_p_row = mat_s%matrix_struct%context%num_pe(1)
+      n_p_col = mat_s%matrix_struct%context%num_pe(2)
+      ! Position of the first processor
+      p_row_0 = mat_s%matrix_struct%first_p_pos(1)
+      p_col_0 = mat_s%matrix_struct%first_p_pos(2)
+      ! Position of the actual processor
+      p_row_i = mat_s%matrix_struct%context%mepos(1)
+      p_col_i = mat_s%matrix_struct%context%mepos(2)
+#endif
+
+      ec => e0%block(id)
+      
+      ! Initialization
+      NULLIFY (mat_u)
+      NULLIFY (mat_w)
+      NULLIFY (scf_cntrl)
+
+      ALLOCATE (et(n_ao))
+      ALLOCATE (ei(n_ao))
+      et(:) = 0.0_dp
+      ei(:) = 0.0_dp
+
+      CALL cp_fm_create(matrix=mat_u, matrix_struct=mat_s%matrix_struct, &
+                        name='OVERLAP MATRIX EIGENVECTORS')
+      CALL cp_fm_create(matrix=mat_w, matrix_struct=mat_s%matrix_struct, &
+                        name='WORKING MATRIX FOR LOWDIN')
+
+      ! Diagonalization of S
+      CALL choose_eigv_solver(mat_s, mat_u, et)
+      CALL cp_fm_to_fm(mat_u, ec%tmatf)
+      CALL cp_fm_to_fm(mat_u, ec%tmatr)
+      !CALL cp_fm_to_fm(ec%tmatf, ec%tmatr)
+      ei(:) = et(:)
+
+      ! Eigenvector quenching
+      CALL get_qs_env(qs_env, scf_control=scf_cntrl)
+
+      n_deps = 0
+      DO i = 1, n_ao
+         IF (et(i) < scf_cntrl%eps_eigval) THEN
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+            IF (p_col_i == ic) THEN
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               DO j = 1, n_ao
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  IF (p_row_i == ir) THEN
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     ec%tmatf%local_data(ir_loc, ic_loc) = 0.0_dp
+                  END IF
+               END DO
+            END IF
+#else
+            ec%tmatf%local_data(1:n_ao, i) = 0.0_dp
+#endif
+            n_deps = n_deps + 1
+         END IF
+      END DO
+
+      IF (n_deps /= 0) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Overlap matrix block exhibits linear dependencies. At least some "// &
+                      "eigenvalues have been quenched.")
+      END IF
+
+      ! Forward ransformations S^{-1/2}
+      IF (output_unit > 0) &
+         WRITE (output_unit, '(/,T3,A)') &
+         'Constructing forward basis-set transformation matrix'
+
+      CALL cp_fm_to_fm(mat_u, mat_w)
+      DO i = 1, n_ao
+         IF (et(i) >= scf_cntrl%eps_eigval) THEN
+            f = et(i)**(-0.25_dp)
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+            IF (p_col_i == ic) THEN
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               DO j = 1, n_ao
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  IF (p_row_i == ir) THEN
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     mat_w%local_data(ir_loc, ic_loc) = f*mat_w%local_data(ir_loc, ic_loc)
+                  END IF
+               END DO
+            END IF
+#else
+            mat_w%local_data(1:n_ao, i) = f*mat_w%local_data(1:n_ao, i)
+#endif
+         END IF
+      END DO
+
+      CALL cp_fm_syrk("U", "N", n_ao, 1.0_dp, mat_w, 1, 1, 0.0_dp, ec%tmatf)
+      CALL cp_fm_upper_to_full(ec%tmatf, mat_w)
+
+!      ! Save the forward-transformation matrix to file
+!      CALL pod_save_transf_mat(qs_env, ec, 'F')
+
+      ! Reverse transformation S^{+1/2}
+      IF (output_unit > 0) &
+         WRITE (output_unit, '(T3,A)') &
+         'Constructing reverse basis-set transformation matrix'
+
+      CALL cp_fm_to_fm(mat_u, mat_w)
+      DO i = 1, n_ao
+         IF (ei(i) >= scf_cntrl%eps_eigval) THEN
+            f = ei(i)**(+0.25_dp)
+#if defined(__SCALAPACK)
+            ic = indxg2p(i, n_b_col, p_col_i, p_col_0, n_p_col)
+            IF (p_col_i == ic) THEN
+               ic_loc = indxg2l(i, n_b_col, p_col_i, p_col_0, n_p_col)
+               DO j = 1, n_ao
+                  ir = indxg2p(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                  IF (p_row_i == ir) THEN
+                     ir_loc = indxg2l(j, n_b_row, p_row_i, p_row_0, n_p_row)
+                     mat_w%local_data(ir_loc, ic_loc) = f*mat_w%local_data(ir_loc, ic_loc)
+                  END IF
+               END DO
+            END IF
+#else
+            mat_w%local_data(1:n_ao, i) = f*mat_w%local_data(1:n_ao, i)
+#endif
+         END IF
+      END DO
+
+      CALL cp_fm_syrk("U", "N", n_ao, 1.0_dp, mat_w, 1, 1, 0.0_dp, ec%tmatr)
+      CALL cp_fm_upper_to_full(ec%tmatr, mat_w)
+
+!      ! Save the backward-transformation matrix to file
+!      CALL pod_save_transf_mat(qs_env, ec, 'B')
+
+      ! Clean memory
+      CALL cp_fm_release(matrix=mat_u)
+      CALL cp_fm_release(matrix=mat_w)
+      DEALLOCATE (et)
+      DEALLOCATE (ei)
+
+   END SUBROUTINE pod_get_transf_mat_sub
 
 ! **************************************************************************************************
 !> \brief check whether the POD data are read from the restart files

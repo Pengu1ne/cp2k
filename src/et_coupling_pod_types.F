@@ -57,6 +57,8 @@ MODULE et_coupling_pod_types
       INTEGER                                            :: n_electrons
       INTEGER                                            :: n_ao
       INTEGER                                            :: n_hab_blocks
+      TYPE(cp_fm_type), POINTER                          :: tmatf
+      TYPE(cp_fm_type), POINTER                          :: tmatr
       TYPE(et_cpl_atom), DIMENSION(:), POINTER           :: atom
       TYPE(mo_set_p_type), DIMENSION(:), POINTER         :: mo
       TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER       :: hab
